@@ -1,15 +1,14 @@
 """Main processing pipeline orchestration."""
 
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional
 import argparse
 
 from .universe import UniverseProcessingOrchestrator
 from .rules import RuleProcessingOrchestrator
 from .reports import ReportGenerationOrchestrator
 from ..core.config import AppConfig
-from ..core.connections import ConnectionManager
-from ..connection_manager import SharedConnectionManager  # Keep for compatibility
+from ..core.connections import PersistentConnectionManager
 from ..utils.logging_config import get_logger, setup_logging
 
 logger = get_logger(__name__)
@@ -20,7 +19,7 @@ class ProcessingPipeline:
     
     def __init__(self, config: AppConfig):
         self.config = config
-        self.connection_manager: Optional[SharedConnectionManager] = None
+        self.connection_manager: Optional[PersistentConnectionManager] = None
         self.universe_orchestrator: Optional[UniverseProcessingOrchestrator] = None
         self.rule_orchestrator: Optional[RuleProcessingOrchestrator] = None
         self.report_orchestrator: Optional[ReportGenerationOrchestrator] = None
@@ -34,14 +33,16 @@ class ProcessingPipeline:
                 log_file=str(self.config.processing.output_dir / 'processing.log')
             )
             
-            # Initialize connection manager
-            logger.info("Initializing shared database connection manager")
-            self.connection_manager = SharedConnectionManager(
-                self.config.database.to_connection_params()
-            )
-            self.connection_manager.initialize()
+            # Initialize persistent connection manager
+            logger.info("Initializing persistent database connection")
+            self.connection_manager = PersistentConnectionManager()
             
-            # Initialize orchestrators
+            # Test connection
+            connection = self.connection_manager.get_connection()
+            if not connection:
+                raise Exception("Failed to establish database connection")
+            
+            # Initialize orchestrators with shared connection
             self.universe_orchestrator = UniverseProcessingOrchestrator(
                 self.connection_manager
             )
@@ -126,7 +127,7 @@ class ProcessingPipeline:
             self.rule_orchestrator.cleanup()
         
         if self.connection_manager:
-            self.connection_manager.cleanup()
+            self.connection_manager.close()
     
     def _log_final_statistics(self) -> None:
         """Log final processing statistics."""

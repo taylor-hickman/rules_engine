@@ -59,21 +59,20 @@ class SuppressionRuleEngine:
     of both suppression and unsuppression outcomes.
     """
     
-    def __init__(self, connection_manager, batch_size: int = 10000):
+    def __init__(self, connection: teradatasql.TeradataConnection, batch_size: int = 10000):
         """
         Initialize the suppression rule engine.
         
         Args:
-            connection_manager: SharedConnectionManager for database access
+            connection: Persistent database connection
             batch_size: Batch size for large dataset processing
         """
-        self.connection_manager = connection_manager
+        self.connection = connection
         self.batch_size = batch_size
         self.session_id = str(uuid.uuid4()).replace('-', '')[:8]
         
         # Component initialization
-        self.connection: Optional[teradatasql.TeradataConnection] = None
-        self.table_manager: Optional[TableManager] = None
+        self.table_manager = TableManager(self.connection)
         
         # Rule management
         self.rules: Dict[str, SuppressionRule] = {}
@@ -107,15 +106,13 @@ class SuppressionRuleEngine:
         Executes all loaded suppression rules against practitioner universe.
         
         Args:
-            config: Rules configuration
-            universe_results: Universe validation results
+            config: Rules configuration (unused but kept for compatibility)
+            universe_results: Universe validation results (unused but kept for compatibility)
             practitioner_universe_table: Table containing practitioner NPIs
             
         Returns:
             Name of master results table containing all outcomes
         """
-        self._ensure_connection()
-        
         try:
             # Create base combinations table
             logger.info("Creating base NPI-specialty combinations")
@@ -167,18 +164,6 @@ class SuppressionRuleEngine:
         
         if self.table_manager:
             self.table_manager.cleanup_all_tables()
-        
-        if self.connection:
-            self.connection_manager.release_component('SuppressionRuleEngine')
-            self.connection = None
-            self.table_manager = None
-    
-    def _ensure_connection(self) -> None:
-        """Ensures database connection is established."""
-        if self.connection is None:
-            logger.debug("Initializing rule engine connection")
-            self.connection = self.connection_manager.get_connection('SuppressionRuleEngine')
-            self.table_manager = TableManager(self.connection)
     
     def _create_base_combinations_table(self, practitioner_universe_table: str) -> str:
         """Creates base table with all NPI-specialty combinations."""

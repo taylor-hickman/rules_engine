@@ -5,6 +5,7 @@ from typing import Optional, Any
 import argparse
 
 from ..core.exceptions import UniverseValidationError
+from ..core.connections import PersistentConnectionManager
 from ..validation.universe import UniverseValidator
 from ..utils.logging_config import get_logger
 
@@ -14,7 +15,7 @@ logger = get_logger(__name__)
 class UniverseProcessingOrchestrator:
     """Orchestrates universe loading and provider type categorization."""
     
-    def __init__(self, connection_manager):
+    def __init__(self, connection_manager: PersistentConnectionManager):
         self.connection_manager = connection_manager
         self.universe_validator: Optional[UniverseValidator] = None
         self.validation_results: Optional[Any] = None
@@ -32,7 +33,9 @@ class UniverseProcessingOrchestrator:
         logger.info("STEP 1: Universe loading and provider type categorization")
         
         try:
-            self.universe_validator = UniverseValidator(self.connection_manager)
+            # Get the persistent connection
+            connection = self.connection_manager.get_connection()
+            self.universe_validator = UniverseValidator(connection)
             
             if args.csv_universe:
                 logger.info(f"Processing CSV universe: {args.csv_universe}")

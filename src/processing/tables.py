@@ -2,7 +2,7 @@
 
 import uuid
 from contextlib import contextmanager
-from typing import Set, Optional, List, Dict
+from typing import Set, Optional, List, Dict, Any
 import teradatasql
 
 from ..utils.logging_config import get_logger
@@ -88,7 +88,7 @@ class BatchProcessor:
     
     @staticmethod
     def batch_insert(
-        cursor: teradatasql.cursor,
+        cursor: Any,  # Teradata cursor object
         table_name: str,
         columns: List[str],
         data: List[tuple],

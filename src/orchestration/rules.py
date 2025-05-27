@@ -4,6 +4,7 @@ from typing import Optional, Dict, Any
 
 from ..processing.engine import SuppressionRuleEngine
 from ..core.exceptions import RuleProcessingError
+from ..core.connections import PersistentConnectionManager
 from ..utils.logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -12,7 +13,7 @@ logger = get_logger(__name__)
 class RuleProcessingOrchestrator:
     """Orchestrates suppression rule loading and execution."""
     
-    def __init__(self, connection_manager, batch_size: int):
+    def __init__(self, connection_manager: PersistentConnectionManager, batch_size: int):
         self.connection_manager = connection_manager
         self.batch_size = batch_size
         self.rule_engine: Optional[SuppressionRuleEngine] = None
@@ -36,10 +37,10 @@ class RuleProcessingOrchestrator:
         """
         try:
             logger.info("STEP 3: Initializing suppression rule engine")
-            self.rule_engine = SuppressionRuleEngine(
-                self.connection_manager, 
-                self.batch_size
-            )
+            
+            # Get the persistent connection
+            connection = self.connection_manager.get_connection()
+            self.rule_engine = SuppressionRuleEngine(connection, self.batch_size)
             
             logger.info("STEP 4: Loading suppression rules from configuration")
             self.rule_engine.load_rules_from_configuration(config)

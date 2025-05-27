@@ -1,9 +1,10 @@
-"""Simplified database connection management."""
+"""Database connection management with persistent connection for volatile tables."""
 
 import time
-from contextlib import contextmanager
 from typing import Optional
 import teradatasql
+from dotenv import load_dotenv
+import os
 
 from .config import DatabaseConfig
 from .constants import CONNECTION_RETRY_ATTEMPTS, CONNECTION_TIMEOUT
@@ -13,34 +14,56 @@ from ..utils.logging_config import get_logger
 logger = get_logger(__name__)
 
 
-class ConnectionManager:
-    """Manages database connections with retry logic."""
+class PersistentConnectionManager:
+    """
+    Manages a single persistent database connection for the entire pipeline.
     
-    def __init__(self, config: DatabaseConfig):
-        self.config = config
-        self._connection: Optional[teradatasql.TeradataConnection] = None
+    This ensures volatile tables remain accessible throughout processing.
+    """
     
-    def connect(self) -> teradatasql.TeradataConnection:
-        """Establish database connection with retry logic."""
-        if self._connection and not self._connection.closed:
-            return self._connection
+    _instance: Optional['PersistentConnectionManager'] = None
+    _connection: Optional[teradatasql.TeradataConnection] = None
+    
+    def __new__(cls):
+        """Singleton pattern to ensure only one connection manager exists."""
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+    
+    def __init__(self):
+        """Initialize connection manager."""
+        if not hasattr(self, '_initialized'):
+            self._initialized = True
+            self.config = DatabaseConfig.from_env()
+            
+    def get_connection(self) -> teradatasql.TeradataConnection:
+        """
+        Get the persistent database connection.
         
+        Creates a new connection if none exists or if the existing one is closed.
+        """
+        if self._connection is None or self._connection.closed:
+            self._connection = self._create_connection()
+        return self._connection
+    
+    def _create_connection(self) -> teradatasql.TeradataConnection:
+        """Create a new database connection with retry logic."""
         params = self.config.to_connection_params()
         last_error = None
         
         for attempt in range(1, CONNECTION_RETRY_ATTEMPTS + 1):
             try:
                 logger.info(f"Connecting to database (attempt {attempt}/{CONNECTION_RETRY_ATTEMPTS})")
-                self._connection = teradatasql.connect(**params)
+                connection = teradatasql.connect(**params)
                 
                 # Test connection
-                cursor = self._connection.cursor()
+                cursor = connection.cursor()
                 cursor.execute("SELECT CURRENT_TIMESTAMP")
                 timestamp = cursor.fetchone()[0]
                 cursor.close()
                 
                 logger.info(f"Database connection established at {timestamp}")
-                return self._connection
+                return connection
                 
             except Exception as e:
                 last_error = e
@@ -64,21 +87,10 @@ class ConnectionManager:
             finally:
                 self._connection = None
     
-    @contextmanager
-    def cursor(self):
-        """Context manager for database cursor."""
-        conn = self.connect()
-        cursor = conn.cursor()
-        try:
-            yield cursor
-        finally:
-            cursor.close()
-    
-    def __enter__(self):
-        """Context manager entry."""
-        self.connect()
-        return self
-    
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        """Context manager exit."""
-        self.close()
+    @classmethod
+    def reset(cls):
+        """Reset the singleton instance (mainly for testing)."""
+        if cls._instance:
+            cls._instance.close()
+        cls._instance = None
+        cls._connection = None

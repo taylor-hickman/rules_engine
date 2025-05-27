@@ -343,25 +343,23 @@ class UniverseValidator:
     """
     Main class for validating and categorizing NPI universe data.
     
-    Coordinates loading universe data from various sources, categorizing NPIs by 
-    provider type, and creating filtered datasets for rule processing.
+    Uses a persistent connection to ensure volatile tables remain accessible.
     """
     
-    def __init__(self, connection_manager):
+    def __init__(self, connection: teradatasql.TeradataConnection):
         """
-        Initialize validator with shared connection manager.
+        Initialize validator with persistent database connection.
         
         Args:
-            connection_manager: SharedConnectionManager instance for database connectivity
+            connection: Persistent database connection
         """
-        self.connection_manager = connection_manager
+        self.connection = connection
         self.session_id = str(uuid.uuid4()).replace('-', '')[:8]
         
-        # Database connection components
-        self.connection: Optional[teradatasql.TeradataConnection] = None
-        self.table_manager: Optional[TableManager] = None
-        self.universe_loader: Optional[UniverseLoader] = None
-        self.categorizer: Optional[ProviderTypeCategorizer] = None
+        # Initialize components
+        self.table_manager = TableManager(self.connection)
+        self.universe_loader = UniverseLoader(self.connection, self.table_manager)
+        self.categorizer = ProviderTypeCategorizer(self.connection)
         
         # Validation results
         self.validation_results: Optional[UniverseValidationResults] = None
@@ -377,8 +375,6 @@ class UniverseValidator:
         Returns:
             Complete validation results with provider type categorization
         """
-        self._ensure_components_initialized()
-        
         logger.info(f"Validating CSV universe: {csv_path}")
         
         # Load universe from CSV
@@ -406,8 +402,6 @@ class UniverseValidator:
         Returns:
             Complete validation results with provider type categorization
         """
-        self._ensure_components_initialized()
-        
         logger.info(f"Validating Teradata universe: {table_name}")
         
         # Validate existing table
@@ -435,8 +429,6 @@ class UniverseValidator:
         Returns:
             Name of created practitioner universe table
         """
-        self._ensure_components_initialized()
-        
         practitioner_npis = list(validation_results.practitioner_npis)
         
         if not practitioner_npis:
@@ -527,30 +519,9 @@ class UniverseValidator:
         return self.validation_results.npi_to_provider_type_map.get(str(npi), ProviderType.UNKNOWN)
     
     def cleanup(self) -> None:
-        """Cleans up all resources and releases shared connection."""
+        """Cleans up volatile tables created during validation."""
         logger.info("Cleaning up universe validator resources")
         
         if self.table_manager:
             self.table_manager.cleanup_all_tables()
-        
-        if self.connection:
-            self.connection_manager.release_component('UniverseValidator')
-            self.connection = None
-            self.table_manager = None
-            self.universe_loader = None
-            self.categorizer = None
-            logger.debug("Universe validator released shared connection")
-    
-    def _ensure_components_initialized(self) -> None:
-        """Initializes database connection and component objects."""
-        if self.connection is None:
-            try:
-                logger.debug("Initializing universe validator components")
-                self.connection = self.connection_manager.get_connection('UniverseValidator')
-                self.table_manager = TableManager(self.connection)
-                self.universe_loader = UniverseLoader(self.connection, self.table_manager)
-                self.categorizer = ProviderTypeCategorizer(self.connection)
-                logger.debug("Universe validator components initialized")
-            except Exception as e:
-                logger.error(f"Failed to initialize universe validator components: {str(e)}")
-                raise UniverseValidationError(f"Failed to initialize components: {str(e)}")
+            logger.debug("Universe validator tables cleaned up")
