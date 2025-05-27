@@ -160,16 +160,14 @@ class DatabaseImpactReportGenerator(BaseReportGenerator):
         headers = ['entity_type', 'entity_id', 'entity_name', 'suppression_action']
         
         def data_generator():
-            # Practitioners to suppress
+            # Practitioners to suppress (simplified without prov_prac_xref_sk)
             query = f"""
             SELECT DISTINCT 
                 'Practitioner' as entity_type,
-                p.prov_prac_xref_sk as entity_id,
-                p.firstname || ' ' || p.lastname as entity_name,
+                m.npi as entity_id,
+                'NPI_' || m.npi as entity_name,
                 'Suppress' as action
             FROM {self.rule_engine.master_results_table} m
-            INNER JOIN providerdataservice_core_v.prov_spayer_practitioners p
-                ON m.npi = p.nationalproviderid
             WHERE m.suppression_flag = 'Y'
             """
             

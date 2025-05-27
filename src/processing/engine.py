@@ -236,13 +236,18 @@ class SuppressionRuleEngine:
             # Build appropriate INSERT statement based on rule level
             cursor = self.connection.cursor()
             if rule.is_specialty_level:
-                # For specialty-level rules, ensure we get npi, specialty_name, concat_key
+                # Specialty-level rules return npi, specialty_name - we need to add concat_key
                 insert_sql = f"""
                 INSERT INTO {result_table} (npi, specialty_name, concat_key)
-                {formatted_query}
+                SELECT DISTINCT 
+                    CAST(rule_results.npi AS VARCHAR(10)) as npi,
+                    CAST(rule_results.specialty_name AS VARCHAR(200)) as specialty_name,
+                    TRIM(CAST(rule_results.npi AS VARCHAR(10)) || '-' || CAST(rule_results.specialty_name AS VARCHAR(200))) as concat_key
+                FROM ({formatted_query}) AS rule_results
+                WHERE rule_results.npi IS NOT NULL AND rule_results.specialty_name IS NOT NULL
                 """
             else:
-                # For NPI-level rules, just get npi
+                # NPI-level rules return just npi
                 insert_sql = f"""
                 INSERT INTO {result_table} (npi)
                 {formatted_query}
@@ -426,43 +431,27 @@ class SuppressionRuleEngine:
         """Calculates the impact on Spayer database tables."""
         cursor = self.connection.cursor()
         
-        # Practitioners to suppress
+        # NPIs to suppress
         cursor.execute(f"""
-        SELECT COUNT(DISTINCT prov_prac_xref_sk)
+        SELECT COUNT(DISTINCT npi)
         FROM {self.master_results_table}
         WHERE suppression_flag = 'Y'
         """)
-        practitioners_count = cursor.fetchone()[0]
+        npis_count = cursor.fetchone()[0]
         
-        # Practices to suppress
+        # NPI-specialty combinations to suppress
         cursor.execute(f"""
-        SELECT COUNT(DISTINCT p.practiceid)
-        FROM {self.master_results_table} m
-        INNER JOIN providerdataservice_core_v.prov_spayer_practicelocations pl
-            ON m.npi = pl.nationalproviderid
-        INNER JOIN providerdataservice_core_v.prov_spayer_practices p
-            ON pl.practiceid = p.practiceid
-        WHERE m.suppression_flag = 'Y'
+        SELECT COUNT(*)
+        FROM {self.master_results_table}
+        WHERE suppression_flag = 'Y'
         """)
-        practices_count = cursor.fetchone()[0]
-        
-        # Facilities to suppress
-        cursor.execute(f"""
-        SELECT COUNT(DISTINCT f.facilityid)
-        FROM {self.master_results_table} m
-        INNER JOIN providerdataservice_core_v.prov_spayer_facilities f
-            ON m.npi = f.nationalproviderid
-        WHERE m.suppression_flag = 'Y'
-        """)
-        facilities_count = cursor.fetchone()[0]
+        combinations_count = cursor.fetchone()[0]
         
         self.database_impact = {
-            'practitioners_to_suppress': practitioners_count,
-            'practices_to_suppress': practices_count,
-            'facilities_to_suppress': facilities_count
+            'npis_to_suppress': npis_count,
+            'combinations_to_suppress': combinations_count
         }
         
         logger.info("Database impact calculated:")
-        logger.info(f"  Practitioners to suppress: {practitioners_count:,}")
-        logger.info(f"  Practices to suppress: {practices_count:,}")
-        logger.info(f"  Facilities to suppress: {facilities_count:,}")
+        logger.info(f"  NPIs to suppress: {npis_count:,}")
+        logger.info(f"  NPI-specialty combinations to suppress: {combinations_count:,}")
