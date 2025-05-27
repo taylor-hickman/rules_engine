@@ -251,7 +251,7 @@ comparison_rules:
           LEFT JOIN PROVIDERDATASERVICE_CORE_V.PROV_SPAYER_DEGREES DEG ON PE.DegreeID = DEG.DegreeID
           JOIN PROVIDERDATASERVICE_CORE_V.PROV_SPAYER_PRACTITIONERPRODUCTS PRPROD ON PRSP.PRACTITIONERID = PRPROD.PRACTITIONERID
           JOIN PROVIDERDATASERVICE_CORE_V.PROV_SPAYER_PRACTITIONERPRODUCTSPECIALTIES PRPRODSP ON PRPRODSP.PractitionerProductRecID = PRPROD.PractitionerProductRecID
-          JOIN PROVIDERDATASERVICE_CORE_V.PROV_SPAYER_SPECIALTIES SP ON SP.SpecialtyId = PRSP.SpecialtyId
+          LEFT JOIN PROVIDERDATASERVICE_CORE_V.PROV_SPAYER_SPECIALTIES SP ON SP.SpecialtyID = PRSP.SpecialtyID
           WHERE (
               ((PRSP.SpecialtyId = 1244642263) AND (DEG.DegreeCode NOT IN ('DO','MD') OR DEG.DegreeCode IS NULL))
               OR ((PRSP.SpecialtyId = 1244642264) AND (DEG.DegreeCode NOT IN ('CP','LP','LCCP','LCP','MD','MPAP') OR DEG.DegreeCode IS NULL))
@@ -266,6 +266,30 @@ comparison_rules:
                       LEFT JOIN PROVIDERDATASERVICE_CORE_V.PROV_SPAYER_PRODUCTS prd ON prprd.ProductID = prd.ProductID
                       WHERE prprd.PractitionerID = PRSP.PractitionerID 
                       AND (prd.ProductCode NOT IN ('683FZ','554UQ') OR prd.ProductCode IS NULL)
+                  )
+              )
+          )
+          AND TRIM(CAST(p.NationalProviderID AS VARCHAR(10)) || '-' || CAST(PRSP.SpecialtyID AS VARCHAR(200))) NOT IN (
+              SELECT DISTINCT TRIM(CAST(c.NationalProviderID AS VARCHAR(10)) || '-' || CAST(d.SpecialtyId AS VARCHAR(200)))
+              FROM PROVIDERDATASERVICE_CORE_V.PROV_SPAYER_DEGREES a
+              LEFT JOIN PROVIDERDATASERVICE_CORE_V.PROV_SPAYER_PRACTITIONEREDUCATION b ON a.degreeId = b.degreeId
+              LEFT JOIN PROVIDERDATASERVICE_CORE_V.PROV_SPAYER_practitioners c ON b.practitionerId = c.practitionerId
+              LEFT JOIN PROVIDERDATASERVICE_CORE_V.PROV_SPAYER_PRACTITIONERSPECIALTIES d ON d.practitionerId = c.practitionerId
+              WHERE (
+                  ((d.SpecialtyId = 1244642263) AND (a.DegreeCode IN ('DO','MD') OR a.DegreeCode IS NULL))
+                  OR ((d.SpecialtyId = 1244642264) AND (a.DegreeCode IN ('CP','LP','LCCP','LCP','MD','MPAP') OR a.DegreeCode IS NULL))
+                  OR ((d.SpecialtyId = 1244642200) AND (a.DegreeCode IN ('LCSW','LCSWC','LCSWR','LICSW','LISW','LISWAP','LISWCP','LMSW','LSCSW','LCSWPIP') OR a.DegreeCode IS NULL))
+                  OR ((d.SpecialtyId = 1244642201) AND (a.DegreeCode IN ('LMFT','IMFT','LCMFT') OR a.DegreeCode IS NULL))
+                  OR ((d.SpecialtyId = 1244642203) AND (a.DegreeCode IN ('LMHC','LCPC','LPC','LPCC','LCMHC','LPCMH','LPCMHSP') OR a.DegreeCode IS NULL))
+                  OR (
+                      a.DegreeCode IN ('CRNP','FNP','CNP','APNP','PMHNP','NP','LNP','CNS','ARNP','CNSPMH','ANP','ACNP','PA','PA_C','APN','APPN','APRN','APRNCNP','APRNCNS','APRNPMH','CRNPPMH','PMHCNS')
+                      AND EXISTS (
+                          SELECT 1
+                          FROM PROVIDERDATASERVICE_CORE_V.PROV_SPAYER_PRACTITIONERPRODUCTS prprd
+                          LEFT JOIN PROVIDERDATASERVICE_CORE_V.PROV_SPAYER_PRODUCTS prd ON prprd.ProductID = prd.ProductID
+                          WHERE prprd.PractitionerID = d.PractitionerID 
+                          AND (prd.ProductCode IN ('683FZ','554UQ'))
+                      )
                   )
               )
           )
