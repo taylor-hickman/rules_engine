@@ -13,7 +13,6 @@ import teradatasql
 
 from .rules import SuppressionRule, RuleExecutionResult, RuleLoader
 from .tables import TableManager
-from ..core.constants import RULE_COLUMNS
 from ..core.exceptions import RuleProcessingError
 from ..utils.logging_config import get_logger
 
@@ -79,6 +78,7 @@ class SuppressionRuleEngine:
         self.rule_execution_results: Dict[str, RuleExecutionResult] = {}
         
         # Result tracking
+        self.practitioner_universe_table: Optional[str] = None
         self.base_combinations_table: Optional[str] = None
         self.master_results_table: Optional[str] = None
         self.processing_statistics: Optional[ProcessingStatistics] = None
@@ -114,6 +114,9 @@ class SuppressionRuleEngine:
             Name of master results table containing all outcomes
         """
         try:
+            # Store practitioner universe table for rule execution
+            self.practitioner_universe_table = practitioner_universe_table
+            
             # Create base combinations table
             logger.info("Creating base NPI-specialty combinations")
             self.base_combinations_table = self._create_base_combinations_table(
@@ -169,27 +172,29 @@ class SuppressionRuleEngine:
         """Creates base table with all NPI-specialty combinations."""
         columns = [
             {'name': 'npi', 'type': 'VARCHAR(10)'},
-            {'name': 'prov_prac_xref_sk', 'type': 'BIGINT'},
-            {'name': 'specialty', 'type': 'VARCHAR(100)'}
+            {'name': 'specialty_name', 'type': 'VARCHAR(200)'},
+            {'name': 'concat_key', 'type': 'VARCHAR(250)'}
         ]
         
         table_name = self.table_manager.create_volatile_table(
-            'base_combinations', columns, primary_index='npi,specialty'
+            'base_combinations', columns, primary_index='npi,specialty_name'
         )
         
-        # Populate with NPI-specialty combinations
+        # Populate with NPI-specialty combinations from practitioner data
         insert_sql = f"""
-        INSERT INTO {table_name} (npi, prov_prac_xref_sk, specialty)
+        INSERT INTO {table_name} (npi, specialty_name, concat_key)
         SELECT DISTINCT 
-            p.nationalproviderid as npi,
-            p.prov_prac_xref_sk,
-            COALESCE(s.primaryspecialtydescr, 'UNKNOWN') as specialty
-        FROM {practitioner_universe_table} u
-        INNER JOIN providerdataservice_core_v.prov_spayer_practitioners p
-            ON u.npi = p.nationalproviderid
-        LEFT JOIN providerdataservice_core_v.prov_spayer_specialties s
-            ON p.prov_prac_xref_sk = s.prov_prac_xref_sk
-            AND s.primaryspecialtyflg = 'Y'
+            CAST(A.NPI AS VARCHAR(10)) as npi,
+            CAST(SP.SpecialtyName AS VARCHAR(200)) as specialty_name,
+            TRIM(CAST(A.NPI AS VARCHAR(10)) || '-' || CAST(SP.SpecialtyName AS VARCHAR(200))) as concat_key
+        FROM PROVIDERDATASERVICE_CORE_V.PROV_SPAYER_practitioners p
+        JOIN {practitioner_universe_table} A ON A.npi = p.NationalProviderID
+        JOIN PROVIDERDATASERVICE_CORE_V.PROV_SPAYER_PRACTITIONERSPECIALTIES PRSP ON p.PractitionerID = PRSP.PractitionerID
+        JOIN PROVIDERDATASERVICE_CORE_V.PROV_SPAYER_PRACTITIONEREDUCATION PE ON PRSP.PractitionerID = PE.PractitionerID
+        JOIN PROVIDERDATASERVICE_CORE_V.PROV_SPAYER_PRACTITIONERPRODUCTS PRPROD ON PRSP.PRACTITIONERID = PRPROD.PRACTITIONERID
+        JOIN PROVIDERDATASERVICE_CORE_V.PROV_SPAYER_PRACTITIONERPRODUCTSPECIALTIES PRPRODSP ON PRPRODSP.PRACTITIONERPRODUCTRECID = PRPROD.PRACTITIONERPRODUCTRECID
+        JOIN PROVIDERDATASERVICE_CORE_V.PROV_SPAYER_SPECIALTIES SP ON PRSP.SPECIALTYID = SP.SPECIALTYID
+        WHERE A.NPI IS NOT NULL AND SP.SpecialtyName IS NOT NULL
         """
         
         cursor = self.connection.cursor()
@@ -208,23 +213,29 @@ class SuppressionRuleEngine:
         start_time = time.time()
         
         try:
-            # Create rule result table
-            columns = [{'name': col, 'type': 'VARCHAR(255)'} for col in RULE_COLUMNS]
+            # Create rule result table based on rule level
             if rule.is_specialty_level:
-                columns.extend([
+                columns = [
                     {'name': 'npi', 'type': 'VARCHAR(10)'},
-                    {'name': 'prov_prac_xref_sk', 'type': 'BIGINT'}
-                ])
+                    {'name': 'specialty_name', 'type': 'VARCHAR(200)'},
+                    {'name': 'concat_key', 'type': 'VARCHAR(250)'}
+                ]
             else:
-                columns.append({'name': 'npi', 'type': 'VARCHAR(10)'})
+                columns = [
+                    {'name': 'npi', 'type': 'VARCHAR(10)'}
+                ]
             
             result_table = self.table_manager.create_volatile_table(
                 f"rule_{rule.rule_id}", columns
             )
             
+            # Format rule query by replacing template variables
+            formatted_query = rule.sql_query.replace('{npi_universe_table}', self.practitioner_universe_table)
+            formatted_query = formatted_query.replace('{base_table}', self.base_combinations_table)
+            
             # Execute rule query
             cursor = self.connection.cursor()
-            insert_sql = f"INSERT INTO {result_table} {rule.sql_query}"
+            insert_sql = f"INSERT INTO {result_table} {formatted_query}"
             cursor.execute(insert_sql)
             
             # Get matched count
@@ -263,10 +274,11 @@ class SuppressionRuleEngine:
         # Build column list for master table
         base_columns = [
             {'name': 'npi', 'type': 'VARCHAR(10)'},
-            {'name': 'prov_prac_xref_sk', 'type': 'BIGINT'},
-            {'name': 'specialty', 'type': 'VARCHAR(100)'},
+            {'name': 'specialty_name', 'type': 'VARCHAR(200)'},
+            {'name': 'concat_key', 'type': 'VARCHAR(250)'},
             {'name': 'rule_combination_key', 'type': 'VARCHAR(1000)'},
-            {'name': 'suppression_flag', 'type': 'CHAR(1)'}
+            {'name': 'suppression_flag', 'type': 'CHAR(1)'},
+            {'name': 'unsuppression_flag', 'type': 'CHAR(1)'}
         ]
         
         # Add columns for each rule
@@ -277,7 +289,7 @@ class SuppressionRuleEngine:
             })
         
         master_table = self.table_manager.create_volatile_table(
-            'master_results', base_columns, primary_index='npi,specialty'
+            'master_results', base_columns, primary_index='npi,specialty_name'
         )
         
         # Build dynamic SQL to populate master table
@@ -295,7 +307,7 @@ class SuppressionRuleEngine:
                 if rule.is_specialty_level:
                     rule_joins.append(
                         f"LEFT JOIN {result.table_name} {rule_alias} "
-                        f"ON b.npi = {rule_alias}.npi AND b.specialty = {rule_alias}.specialty"
+                        f"ON b.concat_key = {rule_alias}.concat_key"
                     )
                 else:
                     rule_joins.append(
@@ -312,11 +324,13 @@ class SuppressionRuleEngine:
         INSERT INTO {master_table}
         SELECT 
             b.npi,
-            b.prov_prac_xref_sk,
-            b.specialty,
+            b.specialty_name,
+            b.concat_key,
             {combination_key} as rule_combination_key,
             CASE WHEN {' OR '.join([f + " = 'Y'" for f in rule_flags])} 
                  THEN 'Y' ELSE 'N' END as suppression_flag,
+            CASE WHEN {' AND '.join([f + " = 'N'" for f in rule_flags])} 
+                 THEN 'Y' ELSE 'N' END as unsuppression_flag,
             {', '.join(rule_case_statements)}
         FROM {self.base_combinations_table} b
         {' '.join(rule_joins)}
