@@ -13,9 +13,9 @@ import teradatasql
 import pandas as pd
 
 from .npi import NPIValidator
-from ..core.constants import MAX_BATCH_SIZE, ProviderType
+from ..core.constants import ProviderType
 from ..core.exceptions import UniverseValidationError, ValidationError
-from ..processing.tables import TableManager, BatchProcessor
+from ..processing.tables import TableManager
 from ..utils.logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -116,11 +116,25 @@ class UniverseLoader:
             npi_data = [(npi,) for npi in valid_npis]
             logger.info(f"Inserting {len(npi_data):,} NPIs into table {table_name}...")
             
-            # Insert all at once
-            placeholders = ", ".join(["?"] * 1)
-            insert_sql = f"INSERT INTO {table_name} (npi) VALUES ({placeholders})"
-            self.cursor.executemany(insert_sql, npi_data)
-            loaded_count = len(npi_data)
+            # Insert in chunks of 50000 to avoid transaction size issues
+            chunk_size = 50000
+            loaded_count = 0
+            
+            for i in range(0, len(npi_data), chunk_size):
+                chunk = npi_data[i:i + chunk_size]
+                try:
+                    insert_sql = f"INSERT INTO {table_name} (npi) VALUES (?)"
+                    self.cursor.executemany(insert_sql, chunk)
+                    loaded_count += len(chunk)
+                    
+                    # Commit after each chunk to avoid large transactions
+                    self.connection.commit()
+                    
+                    if loaded_count % 100000 == 0:
+                        logger.info(f"Progress: {loaded_count:,}/{len(npi_data):,} NPIs inserted")
+                except Exception as e:
+                    logger.error(f"Error inserting chunk at position {i}: {str(e)}")
+                    raise
             
             logger.info(f"Successfully inserted {loaded_count:,} NPIs")
             
