@@ -114,9 +114,15 @@ class UniverseLoader:
             
             # Load NPIs into Teradata table
             npi_data = [(npi,) for npi in valid_npis]
-            loaded_count = BatchProcessor.batch_insert(
-                self.cursor, table_name, ['npi'], npi_data, batch_size=MAX_BATCH_SIZE
-            )
+            logger.info(f"Inserting {len(npi_data):,} NPIs into table {table_name}...")
+            
+            # Insert all at once
+            placeholders = ", ".join(["?"] * 1)
+            insert_sql = f"INSERT INTO {table_name} (npi) VALUES ({placeholders})"
+            self.cursor.executemany(insert_sql, npi_data)
+            loaded_count = len(npi_data)
+            
+            logger.info(f"Successfully inserted {loaded_count:,} NPIs")
             
             logger.info(f"Successfully loaded {loaded_count:,} NPIs from CSV")
             return table_name, loaded_count
@@ -380,6 +386,8 @@ class UniverseValidator:
         # Load universe from CSV
         universe_table, loaded_count = self.universe_loader.load_from_csv(csv_path, npi_column)
         
+        logger.info(f"Universe loaded into table {universe_table}, starting categorization...")
+        
         # Categorize by provider type
         results = self.categorizer.categorize_universe_npis(universe_table)
         
@@ -447,10 +455,12 @@ class UniverseValidator:
         
         # Insert practitioner NPIs with metadata
         npi_data = [(npi, ProviderType.PRACTITIONER) for npi in practitioner_npis]
-        final_count = BatchProcessor.batch_insert(
-            self.connection.cursor(), table_name, ['npi', 'provider_type'], 
-            npi_data, batch_size=MAX_BATCH_SIZE
-        )
+        
+        logger.info(f"Inserting {len(npi_data):,} practitioner NPIs...")
+        insert_sql = f"INSERT INTO {table_name} (npi, provider_type) VALUES (?, ?)"
+        cursor = self.connection.cursor()
+        cursor.executemany(insert_sql, npi_data)
+        final_count = len(npi_data)
         
         logger.info(f"Practitioner universe table created: {table_name} ({final_count:,} NPIs)")
         return table_name

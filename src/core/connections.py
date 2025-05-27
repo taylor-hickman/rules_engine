@@ -3,11 +3,9 @@
 import time
 from typing import Optional
 import teradatasql
-from dotenv import load_dotenv
-import os
 
 from .config import DatabaseConfig
-from .constants import CONNECTION_RETRY_ATTEMPTS, CONNECTION_TIMEOUT
+from .constants import CONNECTION_RETRY_ATTEMPTS
 from .exceptions import DatabaseConnectionError
 from ..utils.logging_config import get_logger
 
@@ -35,6 +33,7 @@ class PersistentConnectionManager:
         if not hasattr(self, '_initialized'):
             self._initialized = True
             self.config = DatabaseConfig.from_env()
+            self._is_connected = False
             
     def get_connection(self) -> teradatasql.TeradataConnection:
         """
@@ -42,8 +41,9 @@ class PersistentConnectionManager:
         
         Creates a new connection if none exists or if the existing one is closed.
         """
-        if self._connection is None or self._connection.closed:
+        if self._connection is None or not self._is_connected:
             self._connection = self._create_connection()
+            self._is_connected = True
         return self._connection
     
     def _create_connection(self) -> teradatasql.TeradataConnection:
@@ -78,7 +78,7 @@ class PersistentConnectionManager:
     
     def close(self):
         """Close the database connection."""
-        if self._connection and not self._connection.closed:
+        if self._connection and self._is_connected:
             try:
                 self._connection.close()
                 logger.info("Database connection closed")
@@ -86,6 +86,22 @@ class PersistentConnectionManager:
                 logger.warning(f"Error closing connection: {str(e)}")
             finally:
                 self._connection = None
+                self._is_connected = False
+    
+    def is_connected(self) -> bool:
+        """Check if connection is active."""
+        if not self._connection or not self._is_connected:
+            return False
+        
+        try:
+            # Test the connection
+            cursor = self._connection.cursor()
+            cursor.execute("SELECT 1")
+            cursor.close()
+            return True
+        except Exception:
+            self._is_connected = False
+            return False
     
     @classmethod
     def reset(cls):

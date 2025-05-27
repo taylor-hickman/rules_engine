@@ -66,6 +66,11 @@ class RuleLoader:
         
         for rule_id, rule_config in config.items():
             try:
+                # Skip disabled rules
+                if not rule_config.get('enabled', True):
+                    logger.debug(f"Skipped disabled rule: {rule_id}")
+                    continue
+                
                 # Validate required fields
                 required_fields = ['name', 'description', 'sql_query', 'level']
                 missing = [f for f in required_fields if f not in rule_config]
@@ -95,11 +100,8 @@ class RuleLoader:
                     enabled=rule_config.get('enabled', True)
                 )
                 
-                if rule.enabled:
-                    rules[rule_id] = rule
-                    logger.debug(f"Loaded rule: {rule_id} ({rule.name})")
-                else:
-                    logger.debug(f"Skipped disabled rule: {rule_id}")
+                rules[rule_id] = rule
+                logger.debug(f"Loaded rule: {rule_id} ({rule.name})")
                     
             except Exception as e:
                 logger.error(f"Failed to load rule '{rule_id}': {str(e)}")

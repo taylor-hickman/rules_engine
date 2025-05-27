@@ -2,7 +2,7 @@
 
 import os
 from dataclasses import dataclass, field
-from typing import Optional, Dict, Any
+from typing import Dict, Any
 from pathlib import Path
 import yaml
 from dotenv import load_dotenv
@@ -66,10 +66,31 @@ class RuleConfig:
             with open(path, 'r') as f:
                 data = yaml.safe_load(f)
             
-            if not isinstance(data, dict) or 'rules' not in data:
+            if not isinstance(data, dict):
                 raise ConfigurationError("Invalid rules file format")
             
-            return cls(rules=data['rules'])
+            # Flatten the rules structure
+            all_rules = {}
+            
+            # Process different sections of the YAML
+            for section_name, section_rules in data.items():
+                if isinstance(section_rules, dict):
+                    for rule_id, rule_config in section_rules.items():
+                        if isinstance(rule_config, dict) and 'name' in rule_config:
+                            # Convert specialty_level to level
+                            if 'specialty_level' in rule_config:
+                                rule_config['level'] = 'specialty' if rule_config.get('specialty_level', False) else 'npi'
+                            elif 'level' not in rule_config:
+                                # Default to npi level if not specified
+                                rule_config['level'] = 'npi'
+                            
+                            all_rules[rule_id] = rule_config
+            
+            if not all_rules:
+                raise ConfigurationError("No valid rules found in configuration file")
+            
+            return cls(rules=all_rules)
+            
         except Exception as e:
             raise ConfigurationError(f"Failed to load rules from {path}: {str(e)}")
     

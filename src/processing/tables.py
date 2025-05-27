@@ -123,11 +123,12 @@ class BatchProcessor:
                 cursor.executemany(insert_sql, batch)
                 total_inserted += len(batch)
                 
-                if i > 0 and i % 100000 == 0:
-                    logger.debug(f"Inserted {total_inserted:,}/{len(data):,} rows")
+                if total_inserted % 50000 == 0:
+                    logger.info(f"Progress: Inserted {total_inserted:,}/{len(data):,} rows")
                     
             except Exception as e:
                 logger.error(f"Error inserting batch at index {i}: {str(e)}")
                 raise
         
+        logger.info(f"Batch insert completed: {total_inserted:,} rows inserted")
         return total_inserted
