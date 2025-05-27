@@ -1,0 +1,4 @@
+pyyaml
+teradatasql
+python-dotenv
+pandas

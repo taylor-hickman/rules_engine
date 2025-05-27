@@ -1,0 +1,326 @@
+# Starting and General Conditions (NPI-level rules)
+starting_conditions:
+  Start_1:
+    name: "Start 1 - Active Military"
+    description: "Drop because of Practitioner table, demographic level indirectory flag (N) - ActiveMilitaryOrReserve = 'N'"
+    enabled: true
+    specialty_level: false
+    sql_query: |
+      SELECT DISTINCT a.NPI
+      FROM {npi_universe_table} a
+      INNER JOIN providerdataservice_core_v.prov_spayer_practitioners p ON a.NPI = p.NationalProviderID
+      WHERE p.ActiveMilitaryOrReserve = 'N'
+  
+  Start_2:
+    name: "Start 2 - Not In Directory"
+    description: "Drop because of NPI having all Practitioner location with indirectory flag (N)"
+    enabled: true
+    specialty_level: false
+    sql_query: |
+      SELECT DISTINCT b.NPI
+      FROM {npi_universe_table} b
+      WHERE b.NPI NOT IN (
+          SELECT DISTINCT a.NPI
+          FROM {npi_universe_table} a
+          INNER JOIN providerdataservice_core_v.prov_spayer_practitioners p ON a.NPI = p.NationalProviderID
+          INNER JOIN providerdataservice_core_v.prov_spayer_practitionerlocations pl ON p.PractitionerID = pl.PractitionerID
+          WHERE pl.InDirectory = 'Y'
+      )
+
+# General conditions  
+  General_1:
+    name: "General 1 - No Specialties"
+    description: "Providers with No speciality in spayer"
+    enabled: true
+    specialty_level: false
+    sql_query: |
+      SELECT a.NPI
+      FROM {npi_universe_table} A
+      WHERE A.NPI IN (
+          SELECT DISTINCT PR.NationalProviderID
+          FROM PROVIDERDATASERVICE_CORE_V.prov_spayer_practitioners PR
+          WHERE NOT EXISTS (
+              SELECT 1
+              FROM PROVIDERDATASERVICE_CORE_V.PROV_SPAYER_PRACTITIONERSPECIALTIES prs
+              WHERE prs.PractitionerID = PR.PractitionerID
+          )
+      )
+  
+  General_2:
+    name: "General 2 - No Phone"
+    description: "No Phone in Practitioner location level"
+    enabled: true
+    specialty_level: false
+    sql_query: |
+      SELECT DISTINCT b.NPI
+      FROM {npi_universe_table} b
+      WHERE b.NPI NOT IN (
+          SELECT DISTINCT a.NPI
+          FROM {npi_universe_table} a
+          INNER JOIN providerdataservice_core_v.prov_spayer_practitioners p ON a.NPI = p.NationalProviderID
+          INNER JOIN providerdataservice_core_v.prov_spayer_practitionerlocations prl ON p.PractitionerID = prl.PractitionerID
+          INNER JOIN providerdataservice_core_v.prov_spayer_PractitionerPhonesLocations ppl ON prl.PractitionerLocationRecID = ppl.PractitionerLocationRecID
+          INNER JOIN providerdataservice_core_v.prov_spayer_Phonetypes phtype ON phtype.phonetypeid = ppl.phonetypeid
+          WHERE phtype.phonetypename IN ('Primary', 'Phone')
+      )
+  
+  General_5:
+    name: "General 5 - No Participating Product"
+    description: "At least 1 Participating product - ProductID <> 1243328076 and active"
+    enabled: true
+    specialty_level: false
+    sql_query: |
+      SELECT DISTINCT b.NPI
+      FROM {npi_universe_table} b
+      WHERE b.NPI NOT IN (
+          SELECT a.NPI
+          FROM {npi_universe_table} a
+          INNER JOIN providerdataservice_core_v.prov_spayer_practitioners p ON a.NPI = p.NationalProviderID
+          INNER JOIN PROVIDERDATASERVICE_CORE_V.PROV_SPAYER_PRACTITIONERPRODUCTS pp ON p.PractitionerID = pp.PractitionerID
+          WHERE pp.ProductID <> 1243328076
+          AND (pp.DateTo >= CURRENT_TIMESTAMP OR pp.DateTo IS NULL)
+      )
+
+# Comparison Rules (NPI+Specialty level rules)
+comparison_rules:
+  Rule_1:
+    name: "Rule 1 - Primary Care without PCP Indicator"
+    description: "If a provider's specialty is internal medicine, family practice, general practice, or geriatric practice, AND (provider is not indicated as a PCP) then suppress from Directory"
+    enabled: true
+    specialty_level: true
+    sql_query: |
+      SELECT DISTINCT bd.npi, bd.specialty_name
+      FROM {base_table} bd
+      WHERE bd.concat_key IN (
+          SELECT DISTINCT TRIM(CAST(p.NationalProviderID AS VARCHAR(10)) || '-' || CAST(SP.SpecialtyName AS VARCHAR(200))) as concat_key
+          FROM PROVIDERDATASERVICE_CORE_V.PROV_SPAYER_practitioners p
+          LEFT JOIN PROVIDERDATASERVICE_CORE_V.PROV_SPAYER_practitionertypes pt ON p.practitionertypeid = pt.practitionertypeid
+          LEFT JOIN PROVIDERDATASERVICE_CORE_V.PROV_SPAYER_PRACTITIONERSPECIALTIES PRSP ON p.PractitionerID = PRSP.PractitionerID
+          JOIN PROVIDERDATASERVICE_CORE_V.PROV_SPAYER_PRACTITIONERPRODUCTS PRPROD ON PRSP.PRACTITIONERID = PRPROD.PRACTITIONERID
+          JOIN PROVIDERDATASERVICE_CORE_V.PROV_SPAYER_PRACTITIONERPRODUCTSPECIALTIES PRPRODSP ON PRPRODSP.PRACTITIONERPRODUCTRECID = PRPROD.PRACTITIONERPRODUCTRECID
+          JOIN PROVIDERDATASERVICE_CORE_V.PROV_SPAYER_SPECIALTIES SP ON PRSP.SpecialtyID = SP.SpecialtyID
+          WHERE PRSP.SPECIALTYID IN (1244642176, 1244642179, 1244642198, 1244642181) 
+          AND (PRPRODSP.SPECIALTYTYPEID <> '1244707445' 
+               OR EXISTS (
+                   SELECT 1
+                   FROM PROVIDERDATASERVICE_CORE_V.PROV_SPAYER_PRACTITIONERPRODUCTSPECIALTIES
+                   WHERE PRACTITIONERPRODUCTRECID = PRPRODSP.PRACTITIONERPRODUCTRECID
+                   GROUP BY PRACTITIONERPRODUCTRECID
+                   HAVING COUNT(DISTINCT SPECIALTYID) > 1
+               ))
+      )
+  
+  Rule_2:
+    name: "Rule 2 - Radiology/Pathology/Anesthesiology/Emergency"
+    description: "If practitioner has one of these 6 specialties: (Pathology, Diagnostic Radiology, Interventional Radiology, Vascular and Interventional Radiology, Anesthesiology, Emergency Medicine), then suppress provider for that specialty"
+    enabled: true
+    specialty_level: true
+    sql_query: |
+      SELECT DISTINCT bd.npi, bd.specialty_name
+      FROM {base_table} bd
+      WHERE bd.concat_key IN (
+          SELECT DISTINCT TRIM(CAST(p.NationalProviderID AS VARCHAR(10)) || '-' || CAST(SP.SpecialtyName AS VARCHAR(200))) as concat_key
+          FROM PROVIDERDATASERVICE_CORE_V.PROV_SPAYER_practitioners p
+          JOIN PROVIDERDATASERVICE_CORE_V.PROV_SPAYER_PRACTITIONERSPECIALTIES PRSP ON p.PractitionerID = PRSP.PractitionerID
+          JOIN PROVIDERDATASERVICE_CORE_V.PROV_SPAYER_PRACTITIONERPRODUCTS PRPROD ON PRSP.PractitionerID = PRPROD.PractitionerID
+          JOIN PROVIDERDATASERVICE_CORE_V.PROV_SPAYER_PRACTITIONERPRODUCTSPECIALTIES PRPRODSP ON PRPROD.PRACTITIONERPRODUCTRECID = PRPRODSP.PRACTITIONERPRODUCTRECID
+          JOIN PROVIDERDATASERVICE_CORE_V.PROV_SPAYER_SPECIALTIES SP ON PRSP.SpecialtyID = SP.SpecialtyID
+          WHERE PRSP.SpecialtyID IN (1244642232,1244642171,1244642199,1244739175,1244642153,1244642172)
+      )
+  
+  Rule_3a:
+    name: "Rule 3a - Only Hospitalist"
+    description: "If the only specialty on the Practitioner is HOSPITALIST then suppress from directory"
+    enabled: true
+    specialty_level: true
+    sql_query: |
+      SELECT DISTINCT bd.npi, bd.specialty_name
+      FROM {base_table} bd
+      WHERE bd.concat_key IN (
+          SELECT DISTINCT TRIM(CAST(p.NationalProviderID AS VARCHAR(10)) || '-' || CAST(SP.SpecialtyName AS VARCHAR(200))) as concat_key
+          FROM PROVIDERDATASERVICE_CORE_V.PROV_SPAYER_practitioners p
+          JOIN PROVIDERDATASERVICE_CORE_V.PROV_SPAYER_PRACTITIONERSPECIALTIES PRSP ON p.PractitionerID = PRSP.PractitionerID
+          JOIN PROVIDERDATASERVICE_CORE_V.PROV_SPAYER_SPECIALTIES SP ON PRSP.SpecialtyID = SP.SpecialtyID
+          JOIN (
+              SELECT practitionerID
+              FROM PROVIDERDATASERVICE_CORE_V.PROV_SPAYER_PRACTITIONERSPECIALTIES
+              GROUP BY practitionerID
+              HAVING COUNT(DISTINCT SpecialtyID) = 1
+          ) AS single_specialty ON PRSP.practitionerID = single_specialty.practitionerID
+          JOIN PROVIDERDATASERVICE_CORE_V.PROV_SPAYER_PRACTITIONERPRODUCTS PRPROD ON PRSP.PRACTITIONERID = PRPROD.PRACTITIONERID
+          JOIN PROVIDERDATASERVICE_CORE_V.PROV_SPAYER_PRACTITIONERPRODUCTSPECIALTIES PRPRODSP ON PRPRODSP.PRACTITIONERPRODUCTRECID = PRPROD.PRACTITIONERPRODUCTRECID
+          WHERE PRSP.SpecialtyID = 1244642193
+      )
+  
+  Rule_3bc:
+    name: "Rule 3bc - Hospitalist with Other Specialties"
+    description: "If Practitioner has HOSPITALIST specialty AND any other specialty EXCEPT internal medicine, family practice, general practice, or geriatric practice THEN suppress this provider from directory"
+    enabled: true
+    specialty_level: true
+    sql_query: |
+      SELECT DISTINCT bd.npi, bd.specialty_name
+      FROM {base_table} bd
+      WHERE bd.concat_key IN (
+          SELECT DISTINCT TRIM(CAST(p.NationalProviderID AS VARCHAR(10)) || '-' || CAST(SP.SpecialtyName AS VARCHAR(200))) as concat_key
+          FROM PROVIDERDATASERVICE_CORE_V.PROV_SPAYER_practitioners p
+          JOIN PROVIDERDATASERVICE_CORE_V.PROV_SPAYER_PRACTITIONERSPECIALTIES PRSP ON p.PractitionerID = PRSP.PractitionerID
+          JOIN PROVIDERDATASERVICE_CORE_V.PROV_SPAYER_PRACTITIONERPRODUCTS PRPROD ON PRSP.PRACTITIONERID = PRPROD.PRACTITIONERID
+          JOIN PROVIDERDATASERVICE_CORE_V.PROV_SPAYER_PRACTITIONERPRODUCTSPECIALTIES PRPRODSP ON PRPRODSP.PRACTITIONERPRODUCTRECID = PRPROD.PRACTITIONERPRODUCTRECID
+          JOIN PROVIDERDATASERVICE_CORE_V.PROV_SPAYER_SPECIALTIES SP ON SP.Specialtyid = PRSP.Specialtyid
+          WHERE PRSP.SpecialtyID = 1244642193
+          AND p.PractitionerID IN (
+              SELECT hosp.PractitionerID
+              FROM PROVIDERDATASERVICE_CORE_V.PROV_SPAYER_PRACTITIONERSPECIALTIES hosp
+              JOIN PROVIDERDATASERVICE_CORE_V.PROV_SPAYER_PRACTITIONERSPECIALTIES other ON hosp.PractitionerID = other.PractitionerID
+              WHERE hosp.SpecialtyID = 1244642193
+              AND other.SpecialtyID <> 1244642193
+              AND other.SpecialtyID NOT IN (1244642176, 1244642179, 1244642198, 1244642181)
+          )
+      )
+  
+  Rule_4:
+    name: "Rule 4 - Mid-Level without PCP or EBH"
+    description: "If practitioner has one of the 9 Mid-Level specialties without a PCP indicator, then suppress that provider specialty. OR Suppression of Mid-Levels without a EBH contract/indicator [EBH Networks: 683FZ (HMO); 554UQ (PPO)]"
+    enabled: true
+    specialty_level: false
+    sql_query: |
+      SELECT DISTINCT p.NationalProviderID as npi
+      FROM PROVIDERDATASERVICE_CORE_V.PROV_SPAYER_PRACTITIONERS P
+      JOIN PROVIDERDATASERVICE_CORE_V.PROV_SPAYER_PRACTITIONERPRODUCTS PP ON PP.practitionerID = P.practitionerID
+      JOIN PROVIDERDATASERVICE_CORE_V.PROV_SPAYER_PRACTITIONERPRODUCTSPECIALTIES PPS ON PPS.practitionerproductrecid = PP.practitionerproductrecid
+      WHERE (P.practitionertypeid IN (21272, 21294, 1244641985, 21302, 21305, 21286, 21306, 21293, 21290)
+             AND (PPS.specialtytypeid <> '1244707445' OR PPS.specialtytypeid IS NULL))
+  
+  Rule_5:
+    name: "Rule 5 - Therapy Specialties"
+    description: "If practitioner has one of the 3 therapy specialties: (Physical Therapist, Speech Pathologist, and Occupational Therapist), then suppress provider for that specialty"
+    enabled: true
+    specialty_level: true
+    sql_query: |
+      SELECT DISTINCT bd.npi, bd.specialty_name
+      FROM {base_table} bd
+      WHERE bd.concat_key IN (
+          SELECT DISTINCT TRIM(CAST(p.NationalProviderID AS VARCHAR(10)) || '-' || CAST(SP.SpecialtyName AS VARCHAR(200))) as concat_key
+          FROM PROVIDERDATASERVICE_CORE_V.PROV_SPAYER_practitioners p
+          JOIN PROVIDERDATASERVICE_CORE_V.PROV_SPAYER_PRACTITIONERSPECIALTIES PRSP ON p.PractitionerID = PRSP.PractitionerID
+          JOIN PROVIDERDATASERVICE_CORE_V.PROV_SPAYER_PRACTITIONERPRODUCTS PRPROD ON PRSP.PractitionerID = PRPROD.PractitionerID
+          JOIN PROVIDERDATASERVICE_CORE_V.PROV_SPAYER_PRACTITIONERPRODUCTSPECIALTIES PRPRODSP ON PRPROD.PRACTITIONERPRODUCTRECID = PRPRODSP.PRACTITIONERPRODUCTRECID
+          JOIN PROVIDERDATASERVICE_CORE_V.PROV_SPAYER_SPECIALTIES SP ON SP.Specialtyid = PRSP.Specialtyid
+          WHERE PRSP.SpecialtyID IN (1244642224,1244642257,1244642276)
+      )
+  
+  Rule_6:
+    name: "Rule 6 - Pediatric Specialties"
+    description: "If practitioner has one of the 25 pediatric specialties, then suppress that provider specialty"
+    enabled: true
+    specialty_level: true
+    sql_query: |
+      SELECT DISTINCT bd.npi, bd.specialty_name
+      FROM {base_table} bd
+      WHERE bd.concat_key IN (
+          SELECT DISTINCT TRIM(CAST(p.NationalProviderID AS VARCHAR(10)) || '-' || CAST(SP.SpecialtyName AS VARCHAR(200))) as concat_key
+          FROM PROVIDERDATASERVICE_CORE_V.PROV_SPAYER_practitioners p
+          JOIN PROVIDERDATASERVICE_CORE_V.PROV_SPAYER_PRACTITIONERSPECIALTIES PRSP ON p.PractitionerID = PRSP.PractitionerID
+          JOIN PROVIDERDATASERVICE_CORE_V.PROV_SPAYER_PRACTITIONERPRODUCTS PRPROD ON PRSP.PractitionerID = PRPROD.PractitionerID
+          JOIN PROVIDERDATASERVICE_CORE_V.PROV_SPAYER_PRACTITIONERPRODUCTSPECIALTIES PRPRODSP ON PRPROD.PRACTITIONERPRODUCTRECID = PRPRODSP.PRACTITIONERPRODUCTRECID
+          JOIN PROVIDERDATASERVICE_CORE_V.PROV_SPAYER_SPECIALTIES SP ON SP.Specialtyid = PRSP.Specialtyid
+          WHERE PRSP.SpecialtyID IN (
+              1244642233,1244642246,1244642238,1244642252,1244642244,1244642240,1244642242,1244642241,1244642247,
+              1244642235,1244642245,1244739013,1244642210,1244642248,1244642243,1244642239,1244642251,1244642170,
+              1244642250,1244642150,1244642236,1244642249,1244642237,1244642234,1244642297
+          )
+      )
+  
+  Rule_7:
+    name: "Rule 7 - Degree Requirements by Specialty"
+    description: "Degree requirements by specialty - various degree codes required for specific specialties, plus EBH contract requirements for mid-level providers"
+    enabled: true
+    specialty_level: true
+    sql_query: |
+      SELECT DISTINCT bd.npi, bd.specialty_name
+      FROM {base_table} bd
+      WHERE bd.concat_key IN (
+          SELECT DISTINCT TRIM(CAST(p.NationalProviderID AS VARCHAR(10)) || '-' || CAST(SP.SpecialtyName AS VARCHAR(200))) as concat_key
+          FROM PROVIDERDATASERVICE_CORE_V.PROV_SPAYER_practitioners p
+          JOIN PROVIDERDATASERVICE_CORE_V.PROV_SPAYER_PRACTITIONERSPECIALTIES PRSP ON p.PractitionerID = PRSP.PractitionerID
+          JOIN PROVIDERDATASERVICE_CORE_V.PROV_SPAYER_PRACTITIONEREDUCATION PE ON PRSP.PractitionerID = PE.PractitionerID
+          LEFT JOIN PROVIDERDATASERVICE_CORE_V.PROV_SPAYER_DEGREES DEG ON PE.DegreeID = DEG.DegreeID
+          JOIN PROVIDERDATASERVICE_CORE_V.PROV_SPAYER_PRACTITIONERPRODUCTS PRPROD ON PRSP.PRACTITIONERID = PRPROD.PRACTITIONERID
+          JOIN PROVIDERDATASERVICE_CORE_V.PROV_SPAYER_PRACTITIONERPRODUCTSPECIALTIES PRPRODSP ON PRPRODSP.PractitionerProductRecID = PRPROD.PractitionerProductRecID
+          JOIN PROVIDERDATASERVICE_CORE_V.PROV_SPAYER_SPECIALTIES SP ON SP.SpecialtyId = PRSP.SpecialtyId
+          WHERE (
+              ((PRSP.SpecialtyId = 1244642263) AND (DEG.DegreeCode NOT IN ('DO','MD') OR DEG.DegreeCode IS NULL))
+              OR ((PRSP.SpecialtyId = 1244642264) AND (DEG.DegreeCode NOT IN ('CP','LP','LCCP','LCP','MD','MPAP') OR DEG.DegreeCode IS NULL))
+              OR ((PRSP.SpecialtyId = 1244642200) AND (DEG.DegreeCode NOT IN ('LCSW','LCSWC','LCSWR','LICSW','LISW','LISWAP','LISWCP','LMSW','LSCSW','LCSWPIP') OR DEG.DegreeCode IS NULL))
+              OR ((PRSP.SpecialtyId = 1244642201) AND (DEG.DegreeCode NOT IN ('LMFT','IMFT','LCMFT') OR DEG.DegreeCode IS NULL))
+              OR ((PRSP.SpecialtyId = 1244642203) AND (DEG.DegreeCode NOT IN ('LMHC','LCPC','LPC','LPCC','LCMHC','LPCMH','LPCMHSP') OR DEG.DegreeCode IS NULL))
+              OR (
+                  DEG.DegreeCode IN ('CRNP','FNP','CNP','APNP','PMHNP','NP','LNP','CNS','ARNP','CNSPMH','ANP','ACNP','PA','PA_C','APN','APPN','APRN','APRNCNP','APRNCNS','APRNPMH','CRNPPMH','PMHCNS')
+                  AND EXISTS (
+                      SELECT 1
+                      FROM PROVIDERDATASERVICE_CORE_V.PROV_SPAYER_PRACTITIONERPRODUCTS prprd
+                      LEFT JOIN PROVIDERDATASERVICE_CORE_V.PROV_SPAYER_PRODUCTS prd ON prprd.ProductID = prd.ProductID
+                      WHERE prprd.PractitionerID = PRSP.PractitionerID 
+                      AND (prd.ProductCode NOT IN ('683FZ','554UQ') OR prd.ProductCode IS NULL)
+                  )
+              )
+          )
+      )
+  
+  Rule_8:
+    name: "Rule 8 - Non-Medicare Specialties"
+    description: "If practitioner has one of the 51 non-Medicare specialties, then suppress provider for that specialty"
+    enabled: true
+    specialty_level: true
+    sql_query: |
+      SELECT DISTINCT bd.npi, bd.specialty_name
+      FROM {base_table} bd
+      WHERE bd.concat_key IN (
+          SELECT DISTINCT TRIM(CAST(p.NationalProviderID AS VARCHAR(10)) || '-' || CAST(SP.SpecialtyName AS VARCHAR(200))) as concat_key
+          FROM PROVIDERDATASERVICE_CORE_V.PROV_SPAYER_practitioners p
+          JOIN PROVIDERDATASERVICE_CORE_V.PROV_SPAYER_PRACTITIONERSPECIALTIES PRSP ON p.PractitionerID = PRSP.PractitionerID
+          JOIN PROVIDERDATASERVICE_CORE_V.PROV_SPAYER_PRACTITIONERPRODUCTS PRPROD ON PRSP.PractitionerID = PRPROD.PractitionerID
+          JOIN PROVIDERDATASERVICE_CORE_V.PROV_SPAYER_PRACTITIONERPRODUCTSPECIALTIES PRPRODSP ON PRPROD.PRACTITIONERPRODUCTRECID = PRPRODSP.PRACTITIONERPRODUCTRECID
+          JOIN PROVIDERDATASERVICE_CORE_V.PROV_SPAYER_SPECIALTIES SP ON PRSP.SpecialtyID = SP.SpecialtyID
+          WHERE PRSP.SpecialtyID IN (
+              1244642144,1244642146,1244642148,1244642152,1244642159,1244642160,1244751417,1244642161,1244642162,
+              1244642164,1244642167,1244642173,1244642175,1244642177,1244642189,1244642190,1244642191,1244642192,
+              1244642194,1244642199,1244642202,1244642204,1244642205,1244642207,1244749500,1244642212,1244642215,
+              1244642216,1244642217,1244642219,1244642221,1244642228,1244642253,1244743097,1244642254,1244642255,
+              1244642261,1244642262,1244642267,1244642268,1244642269,1244642270,1244642275,1244642280,1244642281,
+              1244642284,1244642285,1244642286,1244642289
+          )
+      )
+  
+  Rule_9_12:
+    name: "Rule 9-12 - Location-Based Suppression"
+    description: "If location is from (urgent care, FQHC, Ambulatory Surgical Center, Home Health and provider) and if it is tied to location, then the provider must be suppressed"
+    enabled: true
+    specialty_level: false
+    sql_query: |
+      SELECT DISTINCT pl.nationalproviderid as npi
+      FROM providerdataservice_core_v.prov_spayer_practitionerlocations pls 
+      JOIN providerdataservice_core_v.prov_spayer_practicelocations pl ON pls.locationID = pl.locationID
+      WHERE pl.locationtypeid IN (52819) 
+      AND pl.NationalProviderID IN (
+          SELECT pl2.NationalProviderID 
+          FROM providerdataservice_core_v.prov_spayer_practicelocations pl2 
+          JOIN providerdataservice_core_v.prov_spayer_locationservices ls ON pl2.locationid = ls.locationid
+          WHERE pl2.locationtypeid IN (52820) 
+          AND ls.ServiceTypeID IN (1243664280)
+          AND ls.ServiceCategoryTypeID IN (1243664453,1243664324,1243664436,1243664289,1243664341)
+      )
+  
+  Rule_15:
+    name: "Rule 15 - CMS Preclusion List"
+    description: "If a provider has 00001: Medicare Preclusion List - Provider; 00002: Medicare Opt-Out - Provider; 00003: OIG and GSA/SAM; 00007: Sanctioned Provider; 00009: DSNP Providers On-Hold for SIU tagged for their Claim Hold, then suppress provider from Directory"
+    enabled: true
+    specialty_level: false
+    sql_query: |
+      SELECT DISTINCT PR.NationalProviderID as npi
+      FROM PROVIDERDATASERVICE_CORE_V.prov_spayer_USERFIELDS UF
+      JOIN PROVIDERDATASERVICE_CORE_V.prov_spayer_USERDEFINEDFIELDS UDF ON UF.UserDefinedFieldID = UDF.UserDefinedFieldID
+      JOIN PROVIDERDATASERVICE_CORE_V.prov_spayer_USERDEFINEDLISTFIELDS UDLF ON UDF.UserDefinedFieldID = UDLF.UserDefinedFieldID
+      JOIN PROVIDERDATASERVICE_CORE_V.prov_spayer_practitioners PR ON PR.practitionerid = UF.ParentRecID
+      WHERE UDLF.UserDefinedFieldID IN ('1244707470','1244707474','1244707465')
+      AND UDLF."value" IN ('00001','00002','00003','00007','00009')
