@@ -345,8 +345,10 @@ class SuppressionRuleEngine:
         
         # Build suppression logic
         if rule_flags:
-            suppression_logic = f"CASE WHEN {' OR '.join([f + \" = 'Y'\" for f in rule_flags])} THEN 'Y' ELSE 'N' END"
-            unsuppression_logic = f"CASE WHEN {' AND '.join([f + \" = 'N'\" for f in rule_flags])} THEN 'Y' ELSE 'N' END"
+            suppression_conditions = ' OR '.join([f"{flag} = 'Y'" for flag in rule_flags])
+            unsuppression_conditions = ' AND '.join([f"{flag} = 'N'" for flag in rule_flags])
+            suppression_logic = f"CASE WHEN {suppression_conditions} THEN 'Y' ELSE 'N' END"
+            unsuppression_logic = f"CASE WHEN {unsuppression_conditions} THEN 'Y' ELSE 'N' END"
             rule_columns = ', ' + ', '.join(rule_case_statements)
         else:
             suppression_logic = "'N'"
