@@ -233,9 +233,20 @@ class SuppressionRuleEngine:
             formatted_query = rule.sql_query.replace('{npi_universe_table}', self.practitioner_universe_table)
             formatted_query = formatted_query.replace('{base_table}', self.base_combinations_table)
             
-            # Execute rule query
+            # Build appropriate INSERT statement based on rule level
             cursor = self.connection.cursor()
-            insert_sql = f"INSERT INTO {result_table} {formatted_query}"
+            if rule.is_specialty_level:
+                # For specialty-level rules, ensure we get npi, specialty_name, concat_key
+                insert_sql = f"""
+                INSERT INTO {result_table} (npi, specialty_name, concat_key)
+                {formatted_query}
+                """
+            else:
+                # For NPI-level rules, just get npi
+                insert_sql = f"""
+                INSERT INTO {result_table} (npi)
+                {formatted_query}
+                """
             cursor.execute(insert_sql)
             
             # Get matched count
@@ -281,24 +292,31 @@ class SuppressionRuleEngine:
             {'name': 'unsuppression_flag', 'type': 'CHAR(1)'}
         ]
         
-        # Add columns for each rule
-        for rule_id in sorted(self.rules.keys()):
-            base_columns.append({
-                'name': f"rule_{rule_id}_flag",
-                'type': 'CHAR(1)'
-            })
+        # Add columns for each successful rule only
+        successful_rule_ids = []
+        for rule_id, rule in self.rules.items():
+            result = self.rule_execution_results.get(rule_id)
+            if result and result.success:
+                successful_rule_ids.append(rule_id)
+                base_columns.append({
+                    'name': f"rule_{rule_id}_flag",
+                    'type': 'CHAR(1)'
+                })
         
         master_table = self.table_manager.create_volatile_table(
             'master_results', base_columns, primary_index='npi,specialty_name'
         )
         
-        # Build dynamic SQL to populate master table
+        # Build dynamic SQL to populate master table - only include successful rules
         rule_case_statements = []
         rule_joins = []
+        successful_rules = []
+        failed_rules = []
         
         for rule_id, rule in self.rules.items():
             result = self.rule_execution_results.get(rule_id)
             if result and result.success:
+                successful_rules.append(rule_id)
                 rule_alias = f"r_{rule_id}"
                 rule_case_statements.append(
                     f"CASE WHEN {rule_alias}.npi IS NOT NULL THEN 'Y' ELSE 'N' END AS rule_{rule_id}_flag"
@@ -314,10 +332,26 @@ class SuppressionRuleEngine:
                         f"LEFT JOIN {result.table_name} {rule_alias} "
                         f"ON b.npi = {rule_alias}.npi"
                     )
+            else:
+                failed_rules.append(rule_id)
         
-        # Generate rule combination key
-        rule_flags = [f"rule_{rule_id}_flag" for rule_id in sorted(self.rules.keys())]
-        combination_key = " || '-' || ".join(rule_flags)
+        logger.info(f"Master results will include {len(successful_rules)} successful rules: {successful_rules}")
+        if failed_rules:
+            logger.warning(f"Excluding {len(failed_rules)} failed rules: {failed_rules}")
+        
+        # Generate rule combination key - only for successful rules
+        rule_flags = [f"rule_{rule_id}_flag" for rule_id in sorted(successful_rules)]
+        combination_key = " || '-' || ".join(rule_flags) if rule_flags else "'no_rules'"
+        
+        # Build suppression logic
+        if rule_flags:
+            suppression_logic = f"CASE WHEN {' OR '.join([f + \" = 'Y'\" for f in rule_flags])} THEN 'Y' ELSE 'N' END"
+            unsuppression_logic = f"CASE WHEN {' AND '.join([f + \" = 'N'\" for f in rule_flags])} THEN 'Y' ELSE 'N' END"
+            rule_columns = ', ' + ', '.join(rule_case_statements)
+        else:
+            suppression_logic = "'N'"
+            unsuppression_logic = "'Y'"
+            rule_columns = ""
         
         # Build and execute insert
         insert_sql = f"""
@@ -327,11 +361,8 @@ class SuppressionRuleEngine:
             b.specialty_name,
             b.concat_key,
             {combination_key} as rule_combination_key,
-            CASE WHEN {' OR '.join([f + " = 'Y'" for f in rule_flags])} 
-                 THEN 'Y' ELSE 'N' END as suppression_flag,
-            CASE WHEN {' AND '.join([f + " = 'N'" for f in rule_flags])} 
-                 THEN 'Y' ELSE 'N' END as unsuppression_flag,
-            {', '.join(rule_case_statements)}
+            {suppression_logic} as suppression_flag,
+            {unsuppression_logic} as unsuppression_flag{rule_columns}
         FROM {self.base_combinations_table} b
         {' '.join(rule_joins)}
         """
