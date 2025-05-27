@@ -35,7 +35,7 @@ class MasterTableReportGenerator(BaseReportGenerator):
         
         # Generate data rows
         def data_generator():
-            query = f"SELECT * FROM {self.rule_engine.master_results_table} ORDER BY npi, specialty"
+            query = f"SELECT * FROM {self.rule_engine.master_results_table} ORDER BY npi, specialty_name"
             self.cursor.execute(query)
             
             while True:
